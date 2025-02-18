@@ -50,14 +50,12 @@ BEGIN {
 	use vars qw(@ISA @EXPORT_OK %EXPORT_TAGS);
 	@EXPORT_OK = qw(
 
-		%gs1_maps
-
 		&init_csv_fields
 		&read_gs1_json_file
-		&generate_gs1_message_identifier
 		&generate_gs1_confirmation_message
 		&write_off_csv_file
 		&print_unknown_entries_in_gs1_maps
+		&convert_gs1_xml_file_to_json
 
 	);    # symbols to export on request
 	%EXPORT_TAGS = (all => [@EXPORT_OK]);
@@ -66,12 +64,13 @@ BEGIN {
 use vars @EXPORT_OK;
 
 use ProductOpener::Config qw/:all/;
-use ProductOpener::Tags qw/:all/;
+use ProductOpener::Tags qw/%language_fields canonicalize_taxonomy_tag exists_taxonomy_tag/;
 use ProductOpener::Display qw/$tt process_template display_date_iso/;
 
-use JSON::PP;
+use JSON::MaybeXS;
 use boolean;
 use Data::DeepAccess qw(deep_get);
+use XML::XML2JSON;
 
 =head1 GS1 MAPS
 
@@ -94,7 +93,7 @@ my %unknown_entries_in_gs1_maps = ();
 
 # see https://www.gs1.fr/content/download/2265/17736/version/3/file/FicheProduit3.1.9_PROFIL_ParfumerieSelective_20190523.xlsx
 
-%gs1_maps = (
+my %gs1_maps = (
 
 	# https://gs1.se/en/guides/documentation/code-lists/t4078-allergen-type-code/
 	allergenTypeCode => {
@@ -162,6 +161,7 @@ my %unknown_entries_in_gs1_maps = ();
 		"CU" => "copper",
 		"ENER-" => "energy",
 		"ENERSF" => "calories-from-saturated-fat",
+		"ERYTHL" => "erythritol",
 		"F18D2CN6" => "linoleic-acid",
 		"F18D3N3" => "alpha-linolenic-acid",
 		"F20D4" => "arachidonic-acid",
@@ -217,6 +217,7 @@ my %unknown_entries_in_gs1_maps = ();
 		"SUGAR" => "sugars",
 		"SUGAR-" => "sugars",
 		"TAU" => "taurine",
+		"UNSATURATED_FAT" => "unsaturated-fat",
 		"THIA" => "vitamin-b1",
 		"THIA-" => "vitamin-b1",
 		"VITA-" => "vitamin-a",
@@ -230,6 +231,7 @@ my %unknown_entries_in_gs1_maps = ();
 		"WHEY" => "serum-proteins",
 		# skipped X_ entries such as X_ACAI_BERRY_EXTRACT
 		"ZN" => "zinc",
+		"X_FUNS" => "unsaturated-fat",
 	},
 
 	packagingTypeCode => {
@@ -266,6 +268,7 @@ my %unknown_entries_in_gs1_maps = ();
 		"BLEU_BLANC_COEUR" => "fr:bleu-blanc-coeur",
 		"BIO_LABEL_GERMAN" => "de:EG-Öko-Verordnung",
 		"BIO_PARTENAIRE" => "fr:biopartenaire",
+		"CERTIFIED_PLANT_BASED" => "en:certified plant based",
 		"CROSSED_GRAIN_SYMBOL" => "en:crossed-grain-symbol",
 		"DEMETER" => "en:demeter",
 		"DEMETER_LABEL" => "en:demeter",
@@ -292,6 +295,7 @@ my %unknown_entries_in_gs1_maps = ();
 		"ŒUFS_DE_FRANCE" => "en:french-eggs",
 		"OEUFS_DE_FRANCE" => "en:french-eggs",
 		"ORIGINE_FRANCE_GARANTIE" => "fr:origine-france",
+		"POMMES_DE_TERRES_DE_FRANCE" => "en:potatoes-from-france",
 		"PRODUIT_EN_BRETAGNE" => "en:produced-in-brittany",
 		"PROTECTED_DESIGNATION_OF_ORIGIN" => "en:pdo",
 		"PROTECTED_GEOGRAPHICAL_INDICATION" => "en:pgi",
@@ -303,6 +307,7 @@ my %unknown_entries_in_gs1_maps = ();
 		"TRIMAN" => "fr:triman",
 		"UTZ_CERTIFIED" => "en:utz-certified",
 		"UTZ_CERTIFIED_COCOA" => "en:utz-certified-cocoa",
+		"VIANDE_AGNEAU_FRANCAIS" => "fr:viande-d-agneau-francais",
 		"VIANDE_BOVINE_FRANCAISE" => "en:french-beef",
 		"VOLAILLE_FRANCAISE" => "en:french-poultry",
 	},
@@ -326,30 +331,42 @@ my %unknown_entries_in_gs1_maps = ();
 
 # Normalize some entries
 
-foreach my $tag (sort keys %{$gs1_maps{allergenTypeCode}}) {
-	my $canon_tag = canonicalize_taxonomy_tag("en", "allergens", $gs1_maps{allergenTypeCode}{$tag});
-	if (exists_taxonomy_tag("allergens", $canon_tag)) {
-		$gs1_maps{allergenTypeCode}{$tag} = $canon_tag;
-	}
-	else {
-		$log->error("gs1_maps - entry not in taxonomy",
-			{tagtype => "allergens", tag => $gs1_maps{allergenTypeCode}{$tag}})
-			if $log->is_error();
-		die;
-	}
-}
+my $gs1_maps_entries_normalized = 0;
 
-foreach my $tag (sort keys %{$gs1_maps{packagingMarkedLabelAccreditationCode}}) {
-	my $canon_tag = canonicalize_taxonomy_tag("en", "labels", $gs1_maps{packagingMarkedLabelAccreditationCode}{$tag});
-	if (exists_taxonomy_tag("labels", $canon_tag)) {
-		$gs1_maps{packagingMarkedLabelAccreditationCode}{$tag} = $canon_tag;
+sub normalize_gs1_maps_entries() {
+
+	return if $gs1_maps_entries_normalized;
+
+	foreach my $tag (sort keys %{$gs1_maps{allergenTypeCode}}) {
+		my $canon_tag = canonicalize_taxonomy_tag("en", "allergens", $gs1_maps{allergenTypeCode}{$tag});
+		if (exists_taxonomy_tag("allergens", $canon_tag)) {
+			$gs1_maps{allergenTypeCode}{$tag} = $canon_tag;
+		}
+		else {
+			$log->error("gs1_maps - entry not in taxonomy",
+				{tagtype => "allergens", tag => $gs1_maps{allergenTypeCode}{$tag}})
+				if $log->is_error();
+			die("gs1_maps - entry not in taxonomy - tagtype: allergens - tag: $tag - canon_tag: $canon_tag");
+		}
 	}
-	else {
-		$log->error("gs1_maps - entry not in taxonomy",
-			{tagtype => "labels", tag => $gs1_maps{packagingMarkedLabelAccreditationCode}{$tag}})
-			if $log->is_error();
-		die;
+
+	foreach my $tag (sort keys %{$gs1_maps{packagingMarkedLabelAccreditationCode}}) {
+		my $canon_tag
+			= canonicalize_taxonomy_tag("en", "labels", $gs1_maps{packagingMarkedLabelAccreditationCode}{$tag});
+		if (exists_taxonomy_tag("labels", $canon_tag)) {
+			$gs1_maps{packagingMarkedLabelAccreditationCode}{$tag} = $canon_tag;
+		}
+		else {
+			$log->error("gs1_maps - entry not in taxonomy",
+				{tagtype => "labels", tag => $gs1_maps{packagingMarkedLabelAccreditationCode}{$tag}})
+				if $log->is_error();
+			die("gs1_maps - entry not in taxonomy - tagtype: labels - tag: $tag - canon_tag: $canon_tag");
+		}
 	}
+
+	$gs1_maps_entries_normalized = 1;
+
+	return;
 }
 
 =head2 %gs1_message_to_off
@@ -1109,6 +1126,16 @@ sub gs1_to_off ($gs1_to_off_ref, $json_ref, $results_ref) {
 
 		$log->debug("gs1_to_off - source fields", {source_field => $source_field}) if $log->is_debug();
 
+		# Alnatura does not include the namespace, so we have foodAndBeverageIngredientModule
+		# instead of food_and_beverage_ingredient:foodAndBeverageIngredientModule
+		# Try removing the namespace
+		if (    (not defined $json_ref->{$source_field})
+			and ($source_field =~ /:/)
+			and (defined $json_ref->{$'}))
+		{
+			$source_field = $';
+		}
+
 		if (defined $json_ref->{$source_field}) {
 
 			$log->debug("gs1_to_off - existing source fields",
@@ -1651,7 +1678,7 @@ sub convert_gs1_json_message_to_off_products_csv ($json_ref, $products_ref, $mes
 	# catalogue_item_notification:catalogueItemNotificationMessage
 	# - transaction
 	# -- documentCommand
-	# --- catalogue_item_notification:catalogueItemNotification
+	# --- catalogue_item_notification:catalogueItemNotification : can be an array
 	# ---- catalogueItem
 	# ----- tradeItem
 
@@ -1676,6 +1703,18 @@ sub convert_gs1_json_message_to_off_products_csv ($json_ref, $products_ref, $mes
 		)
 	{
 		if (defined $json_ref->{$field}) {
+			print STDERR "removing encapsulating field $field\n";
+			# If it is an array (e.g. catalogue_item_notification:catalogueItemNotification is an array in Alnatura GmbH messages),
+			# call convert_gs1_json_message_to_off_products_csv() for every child
+			if (ref($json_ref->{$field}) eq 'ARRAY') {
+				my $i = 1;
+				foreach my $child_json_ref (@{$json_ref->{$field}}) {
+					print STDERR "child $i\n";
+					convert_gs1_json_message_to_off_products_csv($child_json_ref, $products_ref, $messages_ref);
+					$i++;
+				}
+				return;
+			}
 			$json_ref = $json_ref->{$field};
 			$log->debug("convert_gs1_json_to_off_csv - remove encapsulating field", {field => $field})
 				if $log->is_debug();
@@ -1711,8 +1750,11 @@ sub convert_gs1_json_message_to_off_products_csv ($json_ref, $products_ref, $mes
 	gs1_to_off(\%gs1_product_to_off, $json_ref, $product_ref);
 
 	# assign the lang and lc fields
+	# we use the language with the most fields
+	# if several languages have the same number of fields, we use the first one in alphabetical order
+	# TODO: it might be good to also use the product target markets / countries to prioritize the main language
 	if (defined $product_ref->{languages}) {
-		my @sorted_languages = sort({$product_ref->{languages}{$b} <=> $product_ref->{languages}{$a}}
+		my @sorted_languages = sort({($product_ref->{languages}{$b} <=> $product_ref->{languages}{$a}) || ($a cmp $b)}
 			keys %{$product_ref->{languages}});
 		my $top_language = $sorted_languages[0];
 		$product_ref->{lc} = $top_language;
@@ -1745,6 +1787,8 @@ The encapsulating GS1 message is added to the $messages_ref array
 sub read_gs1_json_file ($json_file, $products_ref, $messages_ref) {
 
 	$log->debug("read_gs1_json_file", {json_file => $json_file}) if $log->is_debug();
+
+	normalize_gs1_maps_entries();
 
 	open(my $in, "<", $json_file) or die("Cannot open json file $json_file : $!\n");
 	my $json = join(q{}, (<$in>));
@@ -1922,6 +1966,44 @@ sub print_unknown_entries_in_gs1_maps() {
 	}
 
 	return $unknown_entries;
+}
+
+=head2 convert_gs1_xml_file_to_json ($xml_file, $json_file)
+
+Convert a GS1 XML file to a JSON file
+
+=cut 
+
+sub convert_gs1_xml_file_to_json ($xml_file, $json_file) {
+
+	my $xml2json = XML::XML2JSON->new(module => 'JSON', pretty => 1, force_array => 0, attribute_prefix => "");
+
+	open(my $in, "<:encoding(UTF-8)", $xml_file) or die("Could not read $xml_file: $!");
+	my $xml = join('', (<$in>));
+	close($in);
+
+	my $json = $xml2json->convert($xml);
+
+	# XML2JSON changes the namespace concatenation character from : to $
+	# e.g. "allergen_information$allergenInformationModule":
+	# it is unwanted, turn it back to : so that we can match the expected input of ProductOpener::GS1
+	$json =~ s/([a-z])\$([a-z])/$1:$2/ig;
+
+	# Note: XML2JSON also creates a hash for simple text values. Text values of tags are converted to $t properties.
+	# e.g. <gtin>03449862093657</gtin>
+	#
+	# becomes:
+	#
+	# gtin: {
+	#    $t: "03449865355608"
+	# },
+	#
+	# This is taken care of later by the ProductOpener::GS1::convert_single_text_property_to_direct_value() function
+
+	open(my $out, ">:encoding(UTF-8)", $json_file) or die("Could not write $json_file: $!");
+	print $out $json;
+	close($out);
+	return;
 }
 
 1;

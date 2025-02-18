@@ -1,6 +1,8 @@
 use ProductOpener::PerlStandards;
 
-use Test::More;
+use Test2::V0;
+use Data::Dumper;
+$Data::Dumper::Terse = 1;
 use Log::Any::Adapter 'TAP';
 
 use ProductOpener::Ingredients qw/match_ingredient_origin init_origins_regexps/;
@@ -92,6 +94,23 @@ my @tests = (
 			}
 		],
 	},
+	{
+		desc => 'German ingredient aus origin',
+		lc => 'de',
+		text => 'Zucker aus Deutschland, Bio natives Olivenöl extra aus Spanien',
+		expected => [
+			{
+				'ingredient' => 'Zucker',
+				'matched_text' => 'Zucker aus Deutschland,',
+				'origins' => 'Deutschland'
+			},
+			{
+				'ingredient' => 'Bio natives Olivenöl extra',
+				'matched_text' => '  Bio natives Olivenöl extra aus Spanien',
+				'origins' => 'Spanien'
+			}
+		]
+	}
 );
 
 init_origins_regexps();
@@ -108,9 +127,9 @@ foreach my $test_ref (@tests) {
 		}
 	}
 	my $expected = $test_ref->{expected};
-	is_deeply($matched_ingredients_ref, $expected, $test_ref->{desc})
+	is($matched_ingredients_ref, $expected, $test_ref->{desc})
 		|| diag(
-		explain(
+		Dumper(
 			{
 				lc => $test_ref->{lc},
 				input_text => $input_text,

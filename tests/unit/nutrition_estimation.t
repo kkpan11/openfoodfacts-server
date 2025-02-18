@@ -1,12 +1,13 @@
 use ProductOpener::PerlStandards;
 
-use Test::More;
+use Test2::V0;
 use Log::Any::Adapter 'TAP';
 
-use ProductOpener::Ingredients qw/:all/;
-use ProductOpener::NutritionCiqual qw/:all/;
-use ProductOpener::NutritionEstimation qw/:all/;
-use ProductOpener::Test qw/:all/;
+use ProductOpener::Ingredients
+	qw/compute_ingredients_percent_estimates compute_ingredients_percent_min_max_values delete_ingredients_percent_values parse_ingredients_text_service/;
+use ProductOpener::NutritionCiqual qw/load_ciqual_data/;
+use ProductOpener::NutritionEstimation qw/estimate_nutrients_from_ingredients/;
+use ProductOpener::Test qw/compare_to_expected_results init_expected_results/;
 
 my ($test_id, $test_dir, $expected_result_dir, $update_expected_results) = (init_expected_results(__FILE__));
 
@@ -40,11 +41,8 @@ foreach my $test_ref (@tests) {
 	my $testid = $test_ref->{id};
 	my $product_ref = $test_ref->{product};
 
-	print STDERR "ingredients_text: " . $product_ref->{ingredients_text} . " (" . $product_ref->{lc} . ")\n";
-
-	parse_ingredients_text($product_ref);
-	if (compute_ingredients_percent_values(100, 100, $product_ref->{ingredients}) < 0) {
-		print STDERR "compute_ingredients_percent_values < 0, delete ingredients percent values\n";
+	parse_ingredients_text_service($product_ref, {}, {});
+	if (compute_ingredients_percent_min_max_values(100, 100, $product_ref->{ingredients}) < 0) {
 		delete_ingredients_percent_values($product_ref->{ingredients});
 	}
 
