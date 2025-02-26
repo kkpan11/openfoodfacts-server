@@ -2,10 +2,13 @@
 
 use ProductOpener::PerlStandards;
 
-use Test::More;
-use ProductOpener::APITest qw/:all/;
-use ProductOpener::Test qw/:all/;
-use ProductOpener::TestDefaults qw/:all/;
+use Test2::V0;
+use ProductOpener::APITest qw/edit_product execute_api_tests new_client wait_application_ready/;
+use ProductOpener::Test qw/remove_all_products remove_all_users/;
+use ProductOpener::TestDefaults qw/%default_product_form/;
+use ProductOpener::Cache qw/$memd/;
+# We need to flush memcached so that cached queries from other tests (e.g. web_html.t) don't interfere with this test
+$memd->flush_all;
 
 use File::Basename "dirname";
 
@@ -19,8 +22,8 @@ wait_application_ready();
 
 my $ua = new_client();
 
-my $CRAWLING_BOT_USER_AGENT
-	= 'Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm) Chrome/';
+my $CRAWLING_BOT_USER_AGENT = 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)';
+my $DENIED_CRAWLING_BOT_USER_AGENT = 'Mozilla/5.0 (compatible; AhrefsBot/6.1; +http://ahrefs.com/robot/)';
 my $NORMAL_USER_USER_AGENT
 	= 'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/114.0Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/114.0';
 
@@ -29,7 +32,8 @@ my %product_form = (
 	(
 		code => '0200000000235',
 		product_name => "Only-Product",
-		categories => "cakes",
+		categories => "cakes, hazelnut spreads",
+		brands => "Nutella",
 	)
 );
 
@@ -40,27 +44,37 @@ my $tests_ref = [
 	{
 		test_case => 'normal-user-access-product-page',
 		method => 'GET',
-		path => '/product/0200000000235/only-product',
+		path => '/product/0200000000235/only-product-nutella',
 		headers_in => {'User-Agent' => $NORMAL_USER_USER_AGENT},
 		expected_status_code => 200,
 		expected_type => 'html',
-		response_content_must_match => '<title>Only-Product - 100 g</title>'
+		response_content_must_match => '<title>Only-Product - Nutella - 100 g</title>'
 	},
 	# Crawling bot should have access to product page
 	{
 		test_case => 'crawler-access-product-page',
 		method => 'GET',
-		path => '/product/0200000000235/only-product',
+		path => '/product/0200000000235/only-product-nutella',
 		headers_in => {'User-Agent' => $CRAWLING_BOT_USER_AGENT},
 		expected_status_code => 200,
 		expected_type => 'html',
-		response_content_must_match => '<title>Only-Product - 100 g</title>'
+		response_content_must_match => '<title>Only-Product - Nutella - 100 g</title>'
+	},
+	# Denied crawling bot should not have access to any page
+	{
+		test_case => 'denied-crawler-access-product-page',
+		method => 'GET',
+		path => '/product/0200000000235/only-product-nutella',
+		headers_in => {'User-Agent' => $DENIED_CRAWLING_BOT_USER_AGENT},
+		expected_status_code => 200,
+		expected_type => 'html',
+		response_content_must_match => '<h1>NOINDEX</h1>'
 	},
 	# Crawling bot should receive a noindex page for nested facets
 	{
 		test_case => 'crawler-access-nested-facet-page',
 		method => 'GET',
-		path => '/category/hazelnut-spreads/brand/nutella',
+		path => '/facets/categories/hazelnut-spreads/brands/nutella',
 		headers_in => {'User-Agent' => $CRAWLING_BOT_USER_AGENT},
 		expected_status_code => 200,
 		expected_type => 'html',
@@ -70,7 +84,7 @@ my $tests_ref = [
 	{
 		test_case => 'normal-user-access-nested-facet-page',
 		method => 'GET',
-		path => '/category/hazelnut-spreads/brand/nutella',
+		path => '/facets/categories/hazelnut-spreads/brands/nutella',
 		headers_in => {'User-Agent' => $NORMAL_USER_USER_AGENT},
 		expected_status_code => 200,
 		expected_type => 'html',
@@ -80,7 +94,7 @@ my $tests_ref = [
 	{
 		test_case => 'crawler-access-category-facet-page',
 		method => 'GET',
-		path => '/category/hazelnut-spreads',
+		path => '/facets/categories/hazelnut-spreads',
 		headers_in => {'User-Agent' => $CRAWLING_BOT_USER_AGENT},
 		expected_status_code => 200,
 		expected_type => 'html',
@@ -90,7 +104,7 @@ my $tests_ref = [
 	{
 		test_case => 'normal-user-access-category-facet-page',
 		method => 'GET',
-		path => '/category/hazelnut-spreads',
+		path => '/facets/categories/hazelnut-spreads',
 		headers_in => {'User-Agent' => $NORMAL_USER_USER_AGENT},
 		expected_status_code => 200,
 		expected_type => 'html',
@@ -100,7 +114,7 @@ my $tests_ref = [
 	{
 		test_case => 'crawler-access-list-of-tags',
 		method => 'GET',
-		path => '/categories',
+		path => '/facets/categories',
 		headers_in => {'User-Agent' => $CRAWLING_BOT_USER_AGENT},
 		expected_status_code => 200,
 		expected_type => 'html',
@@ -108,9 +122,9 @@ my $tests_ref = [
 	},
 	# Normal user should have access to list of tags
 	{
-		test_case => 'normal-user-access-category-facet-page',
+		test_case => 'normal-user-access-list-of-tags',
 		method => 'GET',
-		path => '/categories',
+		path => '/facets/categories',
 		headers_in => {'User-Agent' => $NORMAL_USER_USER_AGENT},
 		expected_status_code => 200,
 		expected_type => 'html',
@@ -120,19 +134,19 @@ my $tests_ref = [
 	{
 		test_case => 'crawler-access-editor-facet-page',
 		method => 'GET',
-		path => '/editor/unknown-user',
+		path => '/facets/editors/unknown-user',
 		headers_in => {'User-Agent' => $CRAWLING_BOT_USER_AGENT},
 		expected_status_code => 200,
 		expected_type => 'html',
-		response_content_must_match => '<h1>NOINDEX</h1>'
+		response_content_must_match => '<h1>NOINDEX</h1>',
 	},
 	# Normal user should have access to editor facet
 	{
 		test_case => 'normal-user-access-editor-facet-page',
 		method => 'GET',
-		path => '/editor/unknown-user',
+		path => '/facets/editors/unknown-user',
 		headers_in => {'User-Agent' => $NORMAL_USER_USER_AGENT},
-		expected_status_code => 200,
+		expected_status_code => 404,
 		expected_type => 'html',
 		response_content_must_match => 'Unknown user.'
 	},
@@ -140,7 +154,7 @@ my $tests_ref = [
 	{
 		test_case => 'normal-user-get-facet-knowledge-panels',
 		method => 'GET',
-		path => '/category/cakes',
+		path => '/facets/categories/cakes',
 		headers_in => {'User-Agent' => $NORMAL_USER_USER_AGENT},
 		expected_status_code => 200,
 		expected_type => 'html',
@@ -150,7 +164,7 @@ my $tests_ref = [
 	{
 		test_case => 'crawler-does-not-get-facet-knowledge-panels',
 		method => 'GET',
-		path => '/category/cakes',
+		path => '/facets/categories/cakes',
 		headers_in => {'User-Agent' => $CRAWLING_BOT_USER_AGENT},
 		expected_status_code => 200,
 		expected_type => 'html',
@@ -241,6 +255,13 @@ my $tests_ref = [
 		test_case => 'get-robots-txt-world',
 		path => '/robots.txt',
 		subdomain => 'world',
+		expected_type => 'text',
+	},
+	# Indexing should be disabled for denied crawlers
+	{
+		test_case => 'get-robots-txt-denied-crawler',
+		path => '/robots.txt',
+		headers_in => {'User-Agent' => $DENIED_CRAWLING_BOT_USER_AGENT},
 		expected_type => 'text',
 	},
 ];

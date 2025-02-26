@@ -2,10 +2,10 @@
 
 use ProductOpener::PerlStandards;
 
-use Test::More;
-use ProductOpener::APITest qw/:all/;
-use ProductOpener::Test qw/:all/;
-use ProductOpener::TestDefaults qw/:all/;
+use Test2::V0;
+use ProductOpener::APITest qw/construct_test_url create_user new_client wait_application_ready/;
+use ProductOpener::Test qw/remove_all_users/;
+use ProductOpener::TestDefaults qw/%default_user_form/;
 
 remove_all_users();
 wait_application_ready();
@@ -20,6 +20,8 @@ my %edit_form = (
 	name => 'NotTest',
 	userid => 'tests',
 	pro_checkbox => 1,
+	preferred_language => "fr",
+	country => "en:france",
 	action => "process",
 	type => "edit"
 
@@ -32,5 +34,7 @@ my $url_check = construct_test_url("/cgi/user.pl?type=edit&userid=tests", "world
 my $response_check = $ua->get($url_check);
 like($response_check->content, qr/notbob\@test\.com/, "the new email has been well saved");
 like($response_check->content, qr/NotTest/, "the new name has been well saved");
+like($response_check->content, qr/value=.fr.\s+selected/, "new language saved");
+like($response_check->content, qr/value=.en:france.\s+selected/, "new country saved");
 
 done_testing();
